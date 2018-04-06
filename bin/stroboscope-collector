@@ -1,0 +1,81 @@
+#!/bin/python2
+"""Entry point to start a Stroboscope collector."""
+import argparse
+import logging
+
+from stroboscope import join
+from stroboscope.collector import Collector
+
+
+logging.basicConfig(level=logging.DEBUG)
+
+
+def _enter_cli(collector):
+    from cmd import Cmd
+
+    class _CLI(Cmd):
+        prompt = 'collector> '
+
+        def __init__(self, collector):
+            """Register the underlying collector."""
+            self.collector = collector
+            Cmd.__init__(self)
+
+        def do_load(self, line=''):
+            """Load a requirement filename."""
+
+        def do_parse(self, line=''):
+            """Read requirements, type an empty line to stop."""
+            req = []
+            while True:
+                line = raw_input('> ')
+                if line.strip('\n\t\r ') == '':
+                    break
+                req.append(line)
+            self.collector.parse_requirements('\n'.join(req))
+
+        def do_exit(self, _=''):
+            """Exit the CLI."""
+            join()
+            return True
+        do_quit = do_exit
+
+    cli = _CLI(collector)
+    cli.cmdloop()
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(
+        description="Start a Stroboscope collector")
+    parser.add_argument('--req', default=None,
+                        help='A requirement file to load, or open a CLI')
+    parser.add_argument('--ssh-key', default=None,
+                        help="The SSH key filename to use to log into routers")
+    parser.add_argument('--ssh-user', default='root',
+                        help="The SSH username")
+    parser.add_argument('--listen-on', help='The IP address/interface on which'
+                        ' the collector should listen.', default='0.0.0.0',
+                        type=unicode)
+    parser.add_argument('--address', help='The IP address of the collector',
+                        type=unicode)
+    return parser
+
+
+def _parse_args(parser):
+    return parser.parse_args()
+
+
+def _main():
+    args = _parse_args(_build_parser())
+    # Change the measurement_processor argument to build a custom application
+    c = Collector(ssh_keypath=args.ssh_key, ssh_username=args.ssh_user,
+                  listen_on=args.listen_on, phys_dst=args.address)
+    if args.req:
+        c.load_requirements(args.req)
+    else:
+        _enter_cli(c)
+    join()
+
+
+if __name__ == '__main__':
+    _main()

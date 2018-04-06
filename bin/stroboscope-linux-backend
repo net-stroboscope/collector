@@ -1,0 +1,108 @@
+#!/bin/python2
+"""
+Linux backend to provision the use of stroboscope.
+
+At start, the backend will provision the catch-all mirroring rule as
+well as create the GRE tunnel to reach the collector. Then, it will wait
+for the activation sequence from the collector and update the ACL, sleep
+for the timeslot duration, then remove the flows from the match ACL.
+"""
+
+import subprocess as sp
+import sys
+import time
+
+
+MATCH_FLAG = '0x7'
+CLR_DSCP = '0x0'
+TUNNEL_NAME = 'stroboscope'
+
+
+def _err(msg):
+    sys.stderr.write(msg)
+    sys.stderr.flush()
+
+
+def _call(cmd):
+    sp.call(cmd)
+
+
+def _ip(command='tunnel', action='add', args=()):
+    _call(['ip', command, action] + args)
+
+
+def _iptables(table='mangle', action='-A', args=()):
+    _call(['iptables', '-t', table, action] + args)
+
+
+def _process(cmd):
+    atoms = iter(cmd.split(' '))
+    duration = float(atoms.next())
+    rules = []
+    # 15 *|1.2.3.0/24 eth0|1.2.4.0/24 ...
+    for target in atoms:
+        intf, prefix = target.split('|')
+        rule = ['PREROUTING', '-d', prefix,
+                '-j', 'DSCP', '--set-dscp', MATCH_FLAG]
+        if intf:
+            rule.extend(['-i', intf])
+        rules.append(rule)
+    # activate all rules
+    for r in rules:
+        _iptables(action='-I', args=r)
+    # Wait the end of the timeslot
+    time.sleep(duration)
+    # deactivate mirroring
+    for r in rules:
+        _iptables(action='-D', args=r)
+
+
+def _cmdloop():
+    while True:
+        cmd = sys.stdin.readline().strip(' \r\t\n')
+        if cmd == '':
+            _err('Shutting down\n')
+            return
+        try:
+            _process(cmd)
+        except ValueError as e:
+            _err('Could not process command: %s' % e)
+
+
+def main():
+    collector = sys.argv[1]
+    self_address = sys.argv[2]
+    redirect_address = sys.argv[3]
+    # Mirror anything with the mark
+    MIRROR = ['PREROUTING', '-m', 'dscp', '--dscp', MATCH_FLAG,
+              '-j', 'TEE', '--gateway', redirect_address]
+    # Reset the mark on output
+    RESET = ['POSTROUTING', '-m', 'dscp', '--dscp', MATCH_FLAG,
+             '-j', 'DSCP', '--set-dscp', CLR_DSCP]
+    # Add the tunnel to reach the collector
+    TUNNEL = [TUNNEL_NAME, 'mode', 'gre',
+              'remote', collector, 'local', self_address]
+    # route the mirror target through it
+    ROUTE = ['%s/32' % redirect_address, 'dev', TUNNEL_NAME]
+
+    _ip(args=TUNNEL)
+    _ip(command='link', action='set', args=['dev', TUNNEL_NAME, 'up'])
+    _ip(command='route', args=ROUTE)
+    _iptables(args=MIRROR)
+    _iptables(args=RESET)
+
+    try:
+        _cmdloop()
+    except:
+        pass
+
+    _ip(command='route', action='del', args=ROUTE)
+    _ip(action='del', args=TUNNEL)
+    _iptables(action='-D', args=RESET)
+    _iptables(action='-D', args=MIRROR)
+
+
+if len(sys.argv) < 4:
+    _err('Missing arguments: collector-ip tunnel-src mirror-target!\n')
+else:
+    main()
